@@ -902,6 +902,7 @@ class RethinkDB extends Connector {
 	}
 
 	applyOperator(row, operator, criteria, key) {
+    let self = this;
 		const operators = {
 			between(row, value) {
 				return row.gt(value[0]).and(row.lt(value[1]));
@@ -949,6 +950,9 @@ class RethinkDB extends Connector {
 				return condition;
 			},
 			neq(row, value) {
+        if (value === null) {
+          return self.r.row.hasFields(key).and(row.ne(value));
+        }
 				return row.ne(value);
 			},
 			like(row, value) {
