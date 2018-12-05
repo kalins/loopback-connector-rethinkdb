@@ -222,9 +222,6 @@ class RethinkDB extends Connector {
 	autoupdate(models, cb) {
 		const _this = this;
 		this.getConnectionInstance().then(() => {
-			if (_this.debug) {
-				debug('autoupdate');
-			}
 			if (!cb && typeof models === 'function') {
 				cb = models;
 				models = undefined;
@@ -238,74 +235,101 @@ class RethinkDB extends Connector {
 
 			const enableGeoIndexing = this.settings.enableGeoIndexing === true;
 
-			async.each(
-				models,
-				(model, modelCallback) => {
-					const indexes = _this._models[model].settings.indexes || [];
-					let indexList = [];
-					let index = {};
-					let options = {};
+      const tableNames = models.map((model) => _this.tableName(model));
 
-					if (typeof indexes === 'object') {
-						for (const indexName in indexes) {
-							index = indexes[indexName];
-							if (index.keys) {
-								// The index object has keys
-								options = index.options || {};
-								index.options = options;
-							} else {
-								index = {
-									keys: index,
-									options: {}
-								};
-							}
-							index.name = indexName;
-							indexList.push(index);
-						}
-					} else if (Array.isArray(indexes)) {
-						indexList = indexList.concat(indexes);
-					}
+      let uniqueTableModels = models.filter((model, index) =>
+        tableNames.indexOf(_this.tableName(model)) === index
+      );
 
-					if (_this.debug) {
-						debug('create indexes: ', indexList);
-					}
+      // Try to create a database if not exists
+      r.dbList().contains(_this.database)
+        .do(function(databaseExists) {
+          return r.branch(
+            databaseExists,
+            { dbs_created: 0 },
+            r.dbCreate(_this.database)
+          );
+      })
+      .run(_this.db).then(() => {
+        async.each(
+          uniqueTableModels,
+          (model, modelCallback) => {
+            const indexes = _this._models[model].settings.indexes || [];
+            let indexList = [];
+            let index = {};
+            let options = {};
 
-					r.db(_this.database)
-						.table(_this.tableName(model))
-						.indexList()
-						.run(_this.db, (error, alreadyPresentIndexes) => {
-							if (error) return cb(error);
+            if (typeof indexes === 'object') {
+              for (const indexName in indexes) {
+                index = indexes[indexName];
+                if (index.keys) {
+                  // The index object has keys
+                  options = index.options || {};
+                  index.options = options;
+                } else {
+                  index = {
+                    keys: index,
+                    options: {}
+                  };
+                }
+                index.name = indexName;
+                indexList.push(index);
+              }
+            } else if (Array.isArray(indexes)) {
+              indexList = indexList.concat(indexes);
+            }
 
-							async.each(
-								indexList,
-								(index, indexCallback) => {
-									if (_this.debug) {
-										debug('createIndex: ', index);
-									}
 
-									if (alreadyPresentIndexes.includes(index.name)) {
-										return indexCallback();
-									}
+            let tableName_ = _this.tableName(model);
+            let promise = r
+              .db(_this.database)
+              .tableList()
+              .contains(tableName_)
+              .run(_this.db)
+              .then((res) => {
+                if (!res) {
+                  return r
+                    .db(_this.database)
+                    .tableCreate(tableName_)
+                    .run(_this.db);
+                }
+              });
 
-									let query = r
-										.db(_this.database)
-										.table(_this.tableName(model));
-									const keys = Object.keys(
-										index.fields || index.keys
-									).map(key => _this.getRow(model, key));
-									query = query.indexCreate(
-										index.name,
-										keys.length === 1 ? keys[0] : keys,
-										index.options
-									);
-									query.run(_this.db, indexCallback);
-								},
-								modelCallback
-							);
-						});
-				},
-				cb
-			);
+            promise.then(() => {
+              r.db(_this.database)
+                .table(tableName_)
+                .indexList()
+                .run(_this.db, (error, alreadyPresentIndexes) => {
+                  if (error) return cb(error);
+
+                  async.each(
+                    indexList,
+                    (index, indexCallback) => {
+                      if (alreadyPresentIndexes.includes(index.name)) {
+                        return indexCallback();
+                      }
+
+                      let query = r
+                        .db(_this.database)
+                        .table(tableName_);
+                      const keys = Object.keys(
+                        index.fields || index.keys
+                      ).map(key => _this.getRow(model, key));
+                      query = query.indexCreate(
+                        index.name,
+                        keys.length === 1 ? keys[0] : keys,
+                        index.options
+                      );
+                      query.run(_this.db, indexCallback);
+                    },
+                    modelCallback
+                  );
+                });
+            });
+          },
+          cb
+        );
+      });
 		});
 	}
 
@@ -973,7 +997,7 @@ class RethinkDB extends Connector {
     if (criteria === null) {
       return this.r.row.hasFields(key).not();
     }
-    
+
 		return row.eq(criteria);
 	}
 
