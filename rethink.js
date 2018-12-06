@@ -222,9 +222,6 @@ class RethinkDB extends Connector {
 	autoupdate(models, cb) {
 		const _this = this;
 		this.getConnectionInstance().then(() => {
-			if (_this.debug) {
-				debug('autoupdate');
-			}
 			if (!cb && typeof models === 'function') {
 				cb = models;
 				models = undefined;
@@ -238,8 +235,14 @@ class RethinkDB extends Connector {
 
 			const enableGeoIndexing = this.settings.enableGeoIndexing === true;
 
+      const tableNames = models.map((model) => _this.tableName(model));
+
+      let uniqueTableModels = models.filter((model, index) =>
+        tableNames.indexOf(_this.tableName(model)) === index
+      );
+
 			async.each(
-				models,
+				uniqueTableModels,
 				(model, modelCallback) => {
 					const indexes = _this._models[model].settings.indexes || [];
 					let indexList = [];
@@ -266,43 +269,53 @@ class RethinkDB extends Connector {
 						indexList = indexList.concat(indexes);
 					}
 
-					if (_this.debug) {
-						debug('create indexes: ', indexList);
-					}
 
-					r.db(_this.database)
-						.table(_this.tableName(model))
-						.indexList()
-						.run(_this.db, (error, alreadyPresentIndexes) => {
-							if (error) return cb(error);
+          let tableName_ = _this.tableName(model);
+          let promise = r
+            .db(_this.database)
+            .tableList()
+            .contains(tableName_)
+            .run(_this.db)
+            .then((res) => {
+              if (!res) {
+                return r
+                  .db(_this.database)
+                  .tableCreate(tableName_)
+                  .run(_this.db);
+              }
+            });
 
-							async.each(
-								indexList,
-								(index, indexCallback) => {
-									if (_this.debug) {
-										debug('createIndex: ', index);
-									}
+          promise.then(() => {
+            r.db(_this.database)
+              .table(tableName_)
+              .indexList()
+              .run(_this.db, (error, alreadyPresentIndexes) => {
+                if (error) return cb(error);
 
-									if (alreadyPresentIndexes.includes(index.name)) {
-										return indexCallback();
-									}
+                async.each(
+                  indexList,
+                  (index, indexCallback) => {
+                    if (alreadyPresentIndexes.includes(index.name)) {
+                      return indexCallback();
+                    }
 
-									let query = r
-										.db(_this.database)
-										.table(_this.tableName(model));
-									const keys = Object.keys(
-										index.fields || index.keys
-									).map(key => _this.getRow(model, key));
-									query = query.indexCreate(
-										index.name,
-										keys.length === 1 ? keys[0] : keys,
-										index.options
-									);
-									query.run(_this.db, indexCallback);
-								},
-								modelCallback
-							);
-						});
+                    let query = r
+                      .db(_this.database)
+                      .table(tableName_);
+                    const keys = Object.keys(
+                      index.fields || index.keys
+                    ).map(key => _this.getRow(model, key));
+                    query = query.indexCreate(
+                      index.name,
+                      keys.length === 1 ? keys[0] : keys,
+                      index.options
+                    );
+                    query.run(_this.db, indexCallback);
+                  },
+                  modelCallback
+                );
+              });
+          });
 				},
 				cb
 			);
@@ -973,7 +986,7 @@ class RethinkDB extends Connector {
     if (criteria === null) {
       return this.r.row.hasFields(key).not();
     }
-    
+
 		return row.eq(criteria);
 	}
 
